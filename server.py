@@ -2,39 +2,53 @@
 # Licensed under MIT.
 from encwork.server import Server
 from encwork.encryption import *
+from datetime import datetime
 import binascii
 import os
-from json import loads, dumps
-from json.decoder import JSONDecodeError
+import sqlite3
 
 # Track connections & pairs
 connections = []
-paired = []
+paired = {}
 # Public keys of those connected (ip: key)
 public_keys = {}
 # Track how far into the connection process each client is (username setting, etc)
 connection_process = {}
-# Reserve usernames to IP's
-USERNAMES_FILE = "harpocrates-usernames.json" # File to store usernames/IP's
+USERS_FILE = "harpocrates-users.db" # File to store various user data (token, username, signup date)
+usernames = {}
 
-# Load usernames
+# Set up users db
 try:
-    with open(USERNAMES_FILE, "r") as f:
-        usernames = loads(f.read())
-except FileNotFoundError: # Create file if it doesn't exist
-    print("No usernames file, creating one...")
-    with open(USERNAMES_FILE, "w") as f:
-        f.writelines("{}")
-    usernames = {}
-    print("Done.")
-except JSONDecodeError: # Invalid file
+    conn = sqlite3.connect(USERS_FILE)
+    c = conn.cursor()
+    # Check if users table exists
+    exists = 0
+    for table in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users';"):
+        exists += 1
+    if exists < 1:
+        # Ask to create 'users' table
+        while True:
+            ok = input(f"users table in {USERS_FILE} does not exist. Create it? [y/n]: ")
+            if ok.lower() == "y":
+                # Create 'users' table
+                c.execute("""CREATE TABLE users
+                             (token text, uname text, first_connection_date text)""")
+                conn.commit()
+                conn.close()
+                break
+            elif ok.lower() == "n":
+                exit()
+
+except sqlite3.DatabaseError:
     while True:
-        ok = input("Invalid usernames file, OK to overwrite? [y/n]: ")
+        ok = input(f"{USERS_FILE} is a corrupt or invalid SQLite3 database. Overwrite it? [y/n]: ")
         if ok.lower() == "y":
-            with open(USERNAMES_FILE, "w") as f:
-                f.writelines("{}")
-            usernames = {}
-            print("Done.")
+            # Delete file and create database
+            os.remove(USERS_FILE)
+            c.execute("""CREATE TABLE users
+                        (token text, uname text, first_connection_date text)""")
+            conn.commit()
+            conn.close()
             break
         elif ok.lower() == "n":
             exit()
@@ -56,27 +70,37 @@ for status in server.statuses(2.5):
         if connection_process[status["data"][1]] == 0: # Client username-getting
             # Client has provided a token
             if status["data"][0][:5] == "token":
+                conn = sqlite3.connect(USERS_FILE)
+                c = conn.cursor()
                 # Check if the token exists
-                if status["data"][0][5:] in usernames: # Valid token
+                if (status["data"][0][5:],) in c.execute("SELECT token FROM users"): # Valid token
                     # Tell the client the token is valid
                     server.send_msg("OK", status["data"][1])
+                    # Map the username to the IP
+                    for uname in c.execute("SELECT uname FROM users WHERE token=?", (status["data"][0][5:],)):
+                        usernames[status["data"][1]] = uname
                     connection_process[status["data"][1]] += 1
                 else: # Invalid token
                     # Tell the client to token is invalid
                     server.send_msg("NO", status["data"][1])
+                conn.close()
             
             # Client has provided a new username
             if status["data"][0][:5] == "uname":
+                conn = sqlite3.connect(USERS_FILE)
+                c = conn.cursor()
                 # Check if the username is taken
-                if status["data"][0][5:] not in usernames.values(): # Untaken username
+                if (status["data"][0][5:],) not in c.execute("SELECT uname FROM users"): # Untaken username
                     # Generate a new token
                     tk = binascii.b2a_hex(os.urandom(64)).decode("ascii")
                     # Save the token
-                    usernames[tk] = status["data"][0][5:]
-                    with open(USERNAMES_FILE, "w") as f:
-                        f.write(dumps(usernames))
+                    c.execute("INSERT INTO users VALUES (?, ?, ?)", (tk, status["data"][0][5:], datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f")))
+                    conn.commit()
+                    conn.close()
                     # Tell the client the username is valid and provide a token for future use
                     server.send_msg("OK" + tk, status["data"][1])
+                    # Map the username to the IP
+                    usernames[status["data"][1]] = status["data"][0][5:]
                     connection_process[status["data"][1]] += 1
                 else: # Taken username
                     # Tell the client the username has been taken
@@ -95,4 +119,4 @@ for status in server.statuses(2.5):
                 server.send_msg("NO", status["data"][1])
         
         elif connection_process[status["data"][1]] == 2: # Client target-getting
-            pass
+            paired[usernames[status["data"][1]]] = status["data"][0]
