@@ -1,1 +1,4 @@
 *.pyc
+.vscode
+harpocrates-tk.txt
+harpocrates-usernames.json
