@@ -93,7 +93,7 @@ for status in server.statuses(2.5):
                 if (status["data"][0][5:],) not in c.execute("SELECT uname FROM users"): # Untaken username
                     # Generate a new token
                     tk = binascii.b2a_hex(os.urandom(64)).decode("ascii")
-                    # Save the token
+                    # Save the token, username and date of account creation
                     c.execute("INSERT INTO users VALUES (?, ?, ?)", (tk, status["data"][0][5:], datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f")))
                     conn.commit()
                     conn.close()
@@ -119,4 +119,16 @@ for status in server.statuses(2.5):
                 server.send_msg("NO", status["data"][1])
         
         elif connection_process[status["data"][1]] == 2: # Client target-getting
-            paired[usernames[status["data"][1]]] = status["data"][0]
+            paired[usernames[status["data"][1][0]]] = status["data"][0]
+            print(paired)
+            # See if their target has targeted them
+            if status["data"][0] in paired: # Target has connected
+                if paired[status["data"][0]] == usernames[status["data"][1]]: # Both clients tried to connect to each other
+                    # Get the target's IP from the usernames dict
+                    target_ip = list(usernames)[list(usernames.keys()).index(status["data"][0])]
+                    # Send both clients each other's public keys
+                    server.send_msg("CONNECTED" + public_keys[target_ip], status["data"][1])
+                    server.send_msg("CONNECTED" + public_keys[status["data"][1]], target_ip)
+                else: # Target connected to someone else
+                    server.send_msg("FAILED", status["data"][1])
+            # If their target isn't connected yet, don't respond and wait for them to
